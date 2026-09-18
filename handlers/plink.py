@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes
 from core.permissions import require_seller
 from core.format import code, esc, fmt_money_inr, fmt_money_usd
 from core.state import state
-from handlers.linkgen import create_and_store
+from handlers.linkgen import create_and_store, normalize_phone, DEFAULT_PHONE
 
 
 def _parse_args(args):
@@ -54,6 +54,9 @@ def review_kb():
             InlineKeyboardButton("📝 Label", callback_data="plink:review:editlabel"),
         ],
         [
+            InlineKeyboardButton("📱 Phone", callback_data="plink:review:editphone"),
+        ],
+        [
             InlineKeyboardButton("⬅️ Method", callback_data="plink:back:method"),
             InlineKeyboardButton("❌ Cancel", callback_data="plink:cancel"),
         ],
@@ -81,15 +84,18 @@ async def _show_review(user_id, send):
     amount = state.get(user_id, "plink_amount")
     label = state.get(user_id, "plink_label", "")
     method = state.get(user_id, "plink_method", "upi")
+    phone = state.get(user_id, "plink_phone", DEFAULT_PHONE)
     rate, _, _ = get_inr_per_usd()
     inr, usd = _amounts(amount, method, rate)
     method_line = "💳 <b>UPI</b> (INR)" if method == "upi" else "🪙 <b>Crypto</b> (USD)"
     expiry = f"⏰ Expires in {LINK_TTL_HOURS}h" if method == "upi" else "♾️ No expiry"
+    phone_line = f"📱 {phone}" if phone != DEFAULT_PHONE else "📱 <i>not set</i>"
     text = (
         f"🔍 <b>Review Link</b>\n\n"
         f"{method_line}\n"
         f"💵 <b>{fmt_money_inr(inr)} / {fmt_money_usd(usd)}</b>\n"
         f"📝 {esc(label) if label else '<i>no label</i>'}\n"
+        f"{phone_line}\n"
         f"💱 Rs {rate:.2f}/$ · {expiry}"
     )
     await send(text, review_kb())
@@ -157,11 +163,15 @@ async def plink_method_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, me
     await _show_review(user_id, lambda t, k: query.edit_message_text(t, parse_mode="HTML", reply_markup=k))
 
 
-async def plink_back_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def plink_back_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, to="method"):
     query = update.callback_query
     user_id = update.effective_user.id
     if state.get(user_id, "plink_amount") is None:
         await query.edit_message_text("⚠️ Session expired. Run /plink again.")
+        return
+    if to == "review":
+        state.set(user_id, "plink_stage", "review")
+        await _show_review(user_id, lambda t, k: query.edit_message_text(t, parse_mode="HTML", reply_markup=k))
         return
     state.set(user_id, "plink_stage", "method")
     await _show_method(user_id, lambda t, k: query.edit_message_text(t, parse_mode="HTML", reply_markup=k))
@@ -169,7 +179,7 @@ async def plink_back_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def plink_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    for k in ("plink_amount", "plink_label", "plink_method", "plink_stage"):
+    for k in ("plink_amount", "plink_label", "plink_method", "plink_stage", "plink_phone"):
         state.pop(user_id, k, None)
     await update.callback_query.edit_message_text("❌ Cancelled. Run /plink to start over.")
 
@@ -191,6 +201,14 @@ async def plink_review_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, ac
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="plink:back:review")]])
         await query.edit_message_text(
             "📝 Send new label (or <code>/skip</code> to clear):", parse_mode="HTML", reply_markup=kb,
+        )
+        return
+    if action == "editphone":
+        state.set(user_id, "plink_stage", "edit_phone")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="plink:back:review")]])
+        await query.edit_message_text(
+            "📱 Send buyer's 10-digit mobile number (or /skip to leave unset):",
+            parse_mode="HTML", reply_markup=kb,
         )
         return
     # create
@@ -227,6 +245,19 @@ async def plink_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.set(user_id, "plink_stage", "review")
         await _show_review(user_id, lambda t, k: update.message.reply_text(t, parse_mode="HTML", reply_markup=k))
         return True
+    if stage == "edit_phone":
+        text = update.message.text.strip()
+        if text.lower() == "/skip":
+            state.set(user_id, "plink_phone", DEFAULT_PHONE)
+        else:
+            phone = normalize_phone(text)
+            if not phone:
+                await update.message.reply_text("⚠️ Invalid number. Send 10 digits (e.g. <code>9876543210</code>) or /skip:", parse_mode="HTML")
+                return True
+            state.set(user_id, "plink_phone", phone)
+        state.set(user_id, "plink_stage", "review")
+        await _show_review(user_id, lambda t, k: update.message.reply_text(t, parse_mode="HTML", reply_markup=k))
+        return True
     return False
 
 
@@ -235,11 +266,12 @@ async def _create(update, context, user_id, method, amount, label, edit):
     from providers.cashfree import LINK_TTL_HOURS
     rate, _, _ = get_inr_per_usd()
     currency = "INR" if method == "upi" else "USD"
+    phone = state.get(user_id, "plink_phone", DEFAULT_PHONE)
     amount_inr, amount_usd = _amounts(amount, method, rate)
     try:
         link_id, url = create_and_store(
             "plink", method, amount, currency, [], label,
-            user_id, amount_inr, amount_usd, rate,
+            user_id, amount_inr, amount_usd, rate, customer_phone=phone,
         )
     except Exception as e:
         text = f"❌ Provider error: {esc(str(e))}\n\nTry again or ❌ Cancel."
@@ -248,7 +280,7 @@ async def _create(update, context, user_id, method, amount, label, edit):
         else:
             await update.message.reply_text(text, parse_mode="HTML")
         return
-    for k in ("plink_amount", "plink_label", "plink_method", "plink_stage"):
+    for k in ("plink_amount", "plink_label", "plink_method", "plink_stage", "plink_phone"):
         state.pop(user_id, k, None)
     method_line = "💳 <b>UPI</b>" if method == "upi" else "🪙 <b>Crypto</b>"
     expiry = f"⏰ Expires in {LINK_TTL_HOURS}h" if method == "upi" else "♾️ No expiry"
@@ -256,7 +288,8 @@ async def _create(update, context, user_id, method, amount, label, edit):
         f"✅ <b>Link Ready</b>\n\n"
         f"{method_line} · 💵 <b>{fmt_money_inr(amount_inr)} / {fmt_money_usd(amount_usd)}</b>\n"
         f"📝 {esc(label)}\n"
-        f"🔗 {code(link_id)} · {expiry}\n\n"
+        + (f"📱 Buyer: {code(phone)}\n" if phone != DEFAULT_PHONE else "")
+        + f"🔗 {code(link_id)} · {expiry}\n\n"
         f"📤 <b>Forward this to the buyer:</b>\n<code>{url}</code>"
     )
     kb = InlineKeyboardMarkup([

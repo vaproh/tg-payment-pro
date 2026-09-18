@@ -25,6 +25,13 @@ def fmt_money_usd(amount):
         return "$-"
 
 
+def _phone_line(link):
+    phone = (link or {}).get("customer_phone", "")
+    if phone and phone != "9999999999":
+        return f"📱 Buyer: {code(phone)}\n"
+    return ""
+
+
 def fmt_sale_invoice(link, sales, tx_id, url, amount_paid=None):
     received = amount_paid if amount_paid is not None else link.get('amount_expected')
     lines = ["✅ <b>Payment Received (sale)</b>", ""]
@@ -38,12 +45,14 @@ def fmt_sale_invoice(link, sales, tx_id, url, amount_paid=None):
         f"🧾 TX: {code(tx_id or '-')}",
         f"🔗 Source: {esc(url or link.get('url',''))}",
     ]
+    if _phone_line(link):
+        lines.append(_phone_line(link))
     return "\n".join(lines)
 
 
 def fmt_plink_invoice(link, tx_id, amount_paid=None):
     received = amount_paid if amount_paid is not None else link.get('amount_expected')
-    return "\n".join([
+    lines = [
         "✅ <b>Payment Received (custom)</b>",
         "",
         f"🔗 Link: {code(link['link_id'])}",
@@ -52,4 +61,7 @@ def fmt_plink_invoice(link, tx_id, amount_paid=None):
         f"💰 Received: {code(str(received) + ' ' + link.get('currency',''))}",
         f"🧾 TX: {code(tx_id or '-')}",
         f"🔗 Source: {esc(link.get('url',''))}",
-    ])
+    ]
+    if _phone_line(link):
+        lines.append(_phone_line(link))
+    return "\n".join(lines)

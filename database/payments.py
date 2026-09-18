@@ -5,19 +5,37 @@ from database.connection import connect_payments_db, _d
 def create_link(row):
     conn = connect_payments_db()
     try:
-        conn.execute(
-            """INSERT INTO payment_links
-               (link_id, kind, method, url, provider_ref, amount_expected, currency,
-                amount_inr, amount_usd, rate, sale_codes, purpose, creator_user_id, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')""",
-            (
-                row["link_id"], row["kind"], row["method"], row["url"],
-                row.get("provider_ref"), row["amount_expected"], row["currency"],
-                row.get("amount_inr", 0), row.get("amount_usd", 0), row.get("rate", 0),
-                json.dumps(row.get("sale_codes") or []),
-                row.get("purpose"), row["creator_user_id"],
-            ),
-        )
+        try:
+            conn.execute(
+                """INSERT INTO payment_links
+                   (link_id, kind, method, url, provider_ref, amount_expected, currency,
+                    amount_inr, amount_usd, rate, sale_codes, purpose, creator_user_id,
+                    customer_phone, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')""",
+                (
+                    row["link_id"], row["kind"], row["method"], row["url"],
+                    row.get("provider_ref"), row["amount_expected"], row["currency"],
+                    row.get("amount_inr", 0), row.get("amount_usd", 0), row.get("rate", 0),
+                    json.dumps(row.get("sale_codes") or []),
+                    row.get("purpose"), row["creator_user_id"],
+                    row.get("customer_phone", "9999999999"),
+                ),
+            )
+        except Exception:
+            # Pre-migration DB without customer_phone column.
+            conn.execute(
+                """INSERT INTO payment_links
+                   (link_id, kind, method, url, provider_ref, amount_expected, currency,
+                    amount_inr, amount_usd, rate, sale_codes, purpose, creator_user_id, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')""",
+                (
+                    row["link_id"], row["kind"], row["method"], row["url"],
+                    row.get("provider_ref"), row["amount_expected"], row["currency"],
+                    row.get("amount_inr", 0), row.get("amount_usd", 0), row.get("rate", 0),
+                    json.dumps(row.get("sale_codes") or []),
+                    row.get("purpose"), row["creator_user_id"],
+                ),
+            )
         conn.commit()
     finally:
         conn.close()

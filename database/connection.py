@@ -143,6 +143,10 @@ def init_payments_db():
             CREATE INDEX IF NOT EXISTS ix_payment_links_status
             ON payment_links (status)
         """)
+        try:
+            conn.execute("ALTER TABLE payment_links ADD COLUMN customer_phone TEXT DEFAULT '9999999999'")
+        except Exception:
+            pass
         conn.commit()
     finally:
         conn.close()

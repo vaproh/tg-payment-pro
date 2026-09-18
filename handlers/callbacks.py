@@ -2,7 +2,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from core.permissions import require_seller
-from handlers.pay import pay_method_cb, pay_amount_cb, pay_back_cb, pay_cancel_cb, cancel_confirm_cb
+from handlers.pay import pay_method_cb, pay_amount_cb, pay_back_cb, pay_cancel_cb, pay_phone_cb, cancel_confirm_cb
 from handlers.plink import plink_method_cb, plink_review_cb, plink_back_cb, plink_cancel_cb
 from handlers.books import invoice_cb, books_refresh_cb
 from handlers.menu import menu_cb
@@ -20,6 +20,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pay_amount_cb(update, context, data.split(":")[-1])
     elif data == "pay:back:method" or data == "pay:back:amount":
         await pay_back_cb(update, context)
+    elif data == "pay:phone":
+        await pay_phone_cb(update, context)
     elif data == "pay:cancel":
         await pay_cancel_cb(update, context)
     elif data.startswith("cancel:yes:"):
@@ -30,8 +32,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await plink_method_cb(update, context, data.split(":")[-1])
     elif data.startswith("plink:review:"):
         await plink_review_cb(update, context, data.split(":")[-1])
-    elif data == "plink:back:method" or data == "plink:back:review":
-        await plink_back_cb(update, context)
+    elif data == "plink:back:method":
+        await plink_back_cb(update, context, "method")
+    elif data == "plink:back:review":
+        await plink_back_cb(update, context, "review")
     elif data == "plink:cancel":
         await plink_cancel_cb(update, context)
     elif data.startswith("invoice:"):

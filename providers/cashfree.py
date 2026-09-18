@@ -25,7 +25,7 @@ def _expiry_iso():
     )
 
 
-def create_upi_link(link_id, amount_inr, sale_codes, notify_url=""):
+def create_upi_link(link_id, amount_inr, sale_codes, notify_url="", customer_phone="9999999999"):
     payload = {
         "link_id": link_id,
         "link_amount": float(amount_inr),
@@ -40,7 +40,7 @@ def create_upi_link(link_id, amount_inr, sale_codes, notify_url=""):
             "upi_intent": True,
             "notify_url": notify_url or config.CASHFREE_NOTIFY_URL,
         },
-        "customer_details": {"customer_phone": "9999999999"},
+        "customer_details": {"customer_phone": customer_phone or "9999999999"},
     }
     r = requests.post(
         f"{config.CASHFREE_BASE}/pg/links", json=payload, headers=_headers(), timeout=20
