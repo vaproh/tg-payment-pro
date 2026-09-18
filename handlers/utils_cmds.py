@@ -6,7 +6,7 @@ import config
 from core.permissions import require_seller
 from core.format import code
 from providers.fx import get_inr_per_usd, inr_to_usd, usd_to_inr
-from database.connection import connect
+from database.connection import connect_seller_db
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -26,7 +26,7 @@ async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t0 = time.time()
     db_ok = False
     try:
-        conn = connect()
+        conn = connect_seller_db()
         conn.execute("SELECT 1").fetchone()
         conn.close()
         db_ok = True
