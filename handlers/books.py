@@ -2,7 +2,7 @@ import hmac
 import hashlib
 import time
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 import config
@@ -36,41 +36,48 @@ def _scope(user_id):
     return None if get_user_role(user_id) == "admin" else user_id
 
 
+STATUS_EMOJI = {"PAID": "✅", "ACTIVE": "🟡", "EXPIRED": "⏰", "CANCELLED": "🗑️"}
+
+
+def render_book_text(kind, user_id):
+    """Returns (text, keyboard) for a ledger. Used by commands + menu + refresh."""
+    rows = paydb.list_links(kind=kind, creator_user_id=_scope(user_id), limit=20)
+    title = "📒 <b>Sale book (latest 20)</b>" if kind == "sale" else "📕 <b>Plink book (latest 20)</b>"
+    if not rows:
+        hint = "/pay" if kind == "sale" else "/plink"
+        text = f"{title}\n\n📭 Empty. Run {code(hint)} to make one."
+    else:
+        lines = [title]
+        for r in rows:
+            emoji = STATUS_EMOJI.get(r["status"], "⚪")
+            extra = esc(",".join(r.get("sale_codes") or [])) if kind == "sale" else esc(r.get("purpose") or "-")
+            lines.append(
+                f"{emoji} {code(r['link_id'])} | {r['method'].upper()} | "
+                f"{r['amount_expected']:.0f} {r['currency']} | {r['status']} | {extra}"
+            )
+        text = "\n".join(lines)
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"books:refresh:{kind}"),
+            InlineKeyboardButton("📱 Webview", callback_data="menu:books"),
+        ],
+        [InlineKeyboardButton("⬅️ Menu", callback_data="menu:home")],
+    ])
+    return text, kb
+
+
 async def salesbook_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_seller(update):
         return
-    rows = paydb.list_links(kind="sale", creator_user_id=_scope(update.effective_user.id), limit=20)
-    if not rows:
-        await update.message.reply_text("📭 No sale links yet. Run /pay to make one.")
-        return
-    lines = ["📒 <b>Sale book (latest 20)</b>"]
-    status_emoji = {"PAID": "✅", "ACTIVE": "🟡", "EXPIRED": "⏰", "CANCELLED": "🗑️"}
-    for r in rows:
-        codes = ",".join(r.get("sale_codes") or [])
-        emoji = status_emoji.get(r["status"], "⚪")
-        lines.append(
-            f"{emoji} {code(r['link_id'])} | {r['method'].upper()} | {r['amount_expected']:.0f} {r['currency']} "
-            f"| {r['status']} | {esc(codes)}"
-        )
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    text, kb = render_book_text("sale", update.effective_user.id)
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 
 async def plinkbook_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_seller(update):
         return
-    rows = paydb.list_links(kind="plink", creator_user_id=_scope(update.effective_user.id), limit=20)
-    if not rows:
-        await update.message.reply_text("📭 No custom links yet. Run /plink to make one.")
-        return
-    lines = ["📕 <b>Plink book (latest 20)</b>"]
-    status_emoji = {"PAID": "✅", "ACTIVE": "🟡", "EXPIRED": "⏰", "CANCELLED": "🗑️"}
-    for r in rows:
-        emoji = status_emoji.get(r["status"], "⚪")
-        lines.append(
-            f"{emoji} {code(r['link_id'])} | {r['method'].upper()} | {r['amount_expected']:.0f} {r['currency']} "
-            f"| {r['status']} | {esc(r.get('purpose') or '-')}"
-        )
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    text, kb = render_book_text("plink", update.effective_user.id)
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 
 async def invoice_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -96,7 +103,40 @@ async def invoice_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = fmt_sale_invoice(link, sales, link.get("tx_id", ""), link.get("url", ""), settled)
     else:
         text = fmt_plink_invoice(link, link.get("tx_id", ""), settled)
-    await update.message.reply_text(text, parse_mode="HTML")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔗 Open Payment Page", url=link.get("url", "https://t.me/"))],
+    ])
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def invoice_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, link_id: str):
+    """Invoice button from link-ready messages."""
+    user_id = update.effective_user.id
+    link = paydb.get_link(link_id)
+    if not link:
+        await update.callback_query.edit_message_text("🔍 Link not found.")
+        return
+    if get_user_role(user_id) != "admin" and link["creator_user_id"] != user_id:
+        await update.callback_query.answer("🔒 Not yours.", show_alert=True)
+        return
+    from core.format import fmt_sale_invoice, fmt_plink_invoice
+    from database.connection import get_sale_by_code
+    settled = link.get("settled_amount") or link.get("amount_expected")
+    if link.get("kind") == "sale":
+        sales = [s for s in (get_sale_by_code(c) for c in (link.get("sale_codes") or [])) if s]
+        text = fmt_sale_invoice(link, sales, link.get("tx_id", ""), link.get("url", ""), settled)
+    else:
+        text = fmt_plink_invoice(link, link.get("tx_id", ""), settled)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔗 Open Payment Page", url=link.get("url", "https://t.me/"))],
+        [InlineKeyboardButton("⬅️ Menu", callback_data="menu:home")],
+    ])
+    await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def books_refresh_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, kind: str):
+    text, kb = render_book_text(kind, update.effective_user.id)
+    await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
 
 
 async def books_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -14,21 +14,10 @@ def parse_codes(raw):
     return [c.strip().upper() for c in raw.replace(";", ",").split(",") if c.strip()]
 
 
-async def pay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_seller(update):
-        return
-    user_id = update.effective_user.id
-    raw = " ".join(context.args) if context.args else ""
-    if not raw:
-        await update.message.reply_text(
-            f"📝 Usage: {code('/pay SALE-XXX, SALE-YYY')}",
-            parse_mode="HTML",
-        )
-        return
-    codes = parse_codes(raw)
+def validate_codes(user_id, codes):
+    """Returns (sales, problems). Sales are pending + owned (admin bypass)."""
     role = get_user_role(user_id)
     my_seller_id = get_seller_id_by_user_id(user_id)
-
     sales, problems = [], []
     for sc in codes:
         s = get_sale_by_code(sc)
@@ -42,22 +31,19 @@ async def pay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             problems.append(f"🔒 Not yours: {code(sc)}")
             continue
         sales.append(s)
-    if problems:
-        await update.message.reply_text("\n".join(problems), parse_mode="HTML")
-        if not sales:
-            return
+    return sales, problems
+
+
+def method_message(user_id, sales):
+    """Store state + build (text, keyboard) for the method step."""
     total_inr = round(sum(float(s["price"]) for s in sales), 0)
     total_usd, rate, _ = inr_to_usd(total_inr)
-
     state.set(user_id, "pay_codes", [s["sale_code"] for s in sales])
     state.set(user_id, "pay_total_inr", total_inr)
     state.set(user_id, "pay_total_usd", total_usd)
     state.set(user_id, "pay_rate", rate)
     state.set(user_id, "pay_stage", "method")
-
-    lines = []
-    for s in sales:
-        lines.append(f"  • {code(s['sale_code'])} | {esc(s.get('username',''))} | Rs {float(s['price']):,.0f}")
+    lines = [f"  • {code(s['sale_code'])} | {esc(s.get('username',''))} | Rs {float(s['price']):,.0f}" for s in sales]
     text = (
         f"💰 <b>Sale Payment Link</b>\n\n"
         f"📦 <b>Sales ({len(sales)}):</b>\n" + "\n".join(lines) + "\n\n"
@@ -65,10 +51,33 @@ async def pay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💱 Rate: Rs {rate:.2f}/$\n\n"
         f"👇 Choose payment method:"
     )
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("💳 UPI (INR)", callback_data="pay:method:upi"),
-        InlineKeyboardButton("🪙 Crypto (USD)", callback_data="pay:method:crypto"),
-    ]])
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💳 UPI (INR)", callback_data="pay:method:upi"),
+            InlineKeyboardButton("🪙 Crypto (USD)", callback_data="pay:method:crypto"),
+        ],
+        [InlineKeyboardButton("❌ Cancel", callback_data="pay:cancel")],
+    ])
+    return text, kb
+
+
+async def pay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_seller(update):
+        return
+    user_id = update.effective_user.id
+    raw = " ".join(context.args) if context.args else ""
+    if not raw:
+        await update.message.reply_text(
+            f"📝 Send sale codes: {code('/pay SALE-A, SALE-B')}",
+            parse_mode="HTML",
+        )
+        return
+    sales, problems = validate_codes(user_id, parse_codes(raw))
+    if problems:
+        await update.message.reply_text("\n".join(problems), parse_mode="HTML")
+        if not sales:
+            return
+    text, kb = method_message(user_id, sales)
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 
@@ -84,29 +93,67 @@ async def pay_method_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, meth
     total_inr = state.get(user_id, "pay_total_inr", 0)
     total_usd = state.get(user_id, "pay_total_usd", 0)
     rate = state.get(user_id, "pay_rate", 0)
-
     if method == "upi":
         prompt = (
-            f"💳 <b>UPI Method Selected</b>\n\n"
+            f"💳 <b>UPI Method</b> - amount in <b>INR</b>\n\n"
             f"💵 Total: <b>{fmt_money_inr(total_inr)}</b> (~{fmt_money_usd(total_usd)})\n"
-            f"💱 Rate: Rs {rate:.2f}/$\n\n"
-            f"👇 Choose amount:"
+            f"💱 Rate: Rs {rate:.2f}/$\n\n👇 Choose amount:"
         )
     else:
         prompt = (
-            f"🪙 <b>Crypto Method Selected</b>\n\n"
+            f"🪙 <b>Crypto Method</b> - amount in <b>USD</b>\n\n"
             f"💵 Total: <b>{fmt_money_usd(total_usd)}</b> (~{fmt_money_inr(total_inr)})\n"
-            f"💱 Rate: Rs {rate:.2f}/$\n\n"
-            f"👇 Choose amount:"
+            f"💱 Rate: Rs {rate:.2f}/$\n\n👇 Choose amount:"
         )
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
             f"✅ Use {fmt_money_inr(total_inr)}" if method == "upi" else f"✅ Use {fmt_money_usd(total_usd)}",
             callback_data="pay:amt:full",
-        ),
-        InlineKeyboardButton("✏️ Custom Amount", callback_data="pay:amt:custom"),
-    ]])
+        )],
+        [
+            InlineKeyboardButton("✏️ Custom", callback_data="pay:amt:custom"),
+            InlineKeyboardButton("⬅️ Method", callback_data="pay:back:method"),
+        ],
+    ])
     await query.edit_message_text(prompt, parse_mode="HTML", reply_markup=kb)
+
+
+async def pay_back_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Back to method step from amount step."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    codes = state.get(user_id, "pay_codes", [])
+    sales = [s for s in (get_sale_by_code(c) for c in codes) if s]
+    if not sales:
+        await query.edit_message_text("⚠️ Session expired. Run /pay again.")
+        return
+    # Rebuild method step without resetting (keeps same totals)
+    total_inr = state.get(user_id, "pay_total_inr", 0)
+    total_usd = state.get(user_id, "pay_total_usd", 0)
+    rate = state.get(user_id, "pay_rate", 0)
+    state.set(user_id, "pay_stage", "method")
+    lines = [f"  • {code(s['sale_code'])} | Rs {float(s['price']):,.0f}" for s in sales]
+    text = (
+        f"💰 <b>Sale Payment Link</b>\n\n"
+        f"📦 <b>Sales ({len(sales)}):</b>\n" + "\n".join(lines) + "\n\n"
+        f"💵 Total: <b>{fmt_money_inr(total_inr)} / {fmt_money_usd(total_usd)}</b>\n"
+        f"💱 Rate: Rs {rate:.2f}/$\n\n👇 Choose payment method:"
+    )
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💳 UPI (INR)", callback_data="pay:method:upi"),
+            InlineKeyboardButton("🪙 Crypto (USD)", callback_data="pay:method:crypto"),
+        ],
+        [InlineKeyboardButton("❌ Cancel", callback_data="pay:cancel")],
+    ])
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def pay_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    for k in ("pay_codes", "pay_total_inr", "pay_total_usd", "pay_rate", "pay_method", "pay_stage"):
+        state.pop(user_id, k, None)
+    await update.callback_query.edit_message_text("❌ Cancelled. Run /pay to start over.")
 
 
 async def pay_amount_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, choice: str):
@@ -116,7 +163,10 @@ async def pay_amount_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, choi
         state.set(user_id, "pay_stage", "custom_amount")
         method = state.get(user_id, "pay_method", "upi")
         unit = "INR" if method == "upi" else "USD"
-        await query.edit_message_text(f"✏️ Send custom amount in <b>{unit}</b>:", parse_mode="HTML")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="pay:back:amount")]])
+        await query.edit_message_text(
+            f"✏️ Send custom amount in <b>{unit}</b>:", parse_mode="HTML", reply_markup=kb,
+        )
         return
     await _finalize_pay(update, context, custom=None)
 
@@ -137,10 +187,8 @@ async def _finalize_pay(update: Update, context, custom):
             await update.message.reply_text(msg)
         return
 
-    if custom is None:
-        amount = total_inr if method == "upi" else total_usd
-    else:
-        amount = custom
+    amount = total_inr if (custom is None and method == "upi") else \
+        total_usd if custom is None else custom
     currency = "INR" if method == "upi" else "USD"
     if method == "upi":
         amount_inr, amount_usd = float(amount), round(float(amount) / rate, 2) if rate else 0
@@ -153,7 +201,7 @@ async def _finalize_pay(update: Update, context, custom):
             user_id, amount_inr, amount_usd, rate,
         )
     except Exception as e:
-        msg = f"❌ Provider error: {esc(str(e))}"
+        msg = f"❌ Provider error: {esc(str(e))}\n\nTry again or /cancel."
         if query:
             await query.edit_message_text(msg, parse_mode="HTML")
         else:
@@ -162,51 +210,68 @@ async def _finalize_pay(update: Update, context, custom):
     for k in ("pay_codes", "pay_total_inr", "pay_total_usd", "pay_rate", "pay_method", "pay_stage"):
         state.pop(user_id, k, None)
 
-    method_emoji = "💳" if method == "upi" else "🪙"
+    method_line = "💳 <b>UPI</b>" if method == "upi" else "🪙 <b>Crypto</b>"
     if method == "upi":
         from providers.cashfree import LINK_TTL_HOURS
         expiry_note = f"⏰ Expires in {LINK_TTL_HOURS}h"
     else:
         expiry_note = "♾️ No expiry"
-    sales_list = ", ".join(code(c) for c in codes)
     text = (
-        f"✅ <b>Payment Link Created</b>\n\n"
-        f"{method_emoji} Method: <b>{method.upper()}</b>\n"
-        f"📦 Sales: {sales_list}\n"
-        f"💵 Amount: <b>{fmt_money_inr(amount_inr)} / {fmt_money_usd(amount_usd)}</b>\n"
-        f"🔗 Link: <code>{link_id}</code>\n"
-        f"{expiry_note}\n\n"
-        f"👇 <b>Send this to buyer:</b>\n<code>{url}</code>"
+        f"✅ <b>Link Ready</b>\n\n"
+        f"{method_line} · 💵 <b>{fmt_money_inr(amount_inr)} / {fmt_money_usd(amount_usd)}</b>\n"
+        f"📦 {', '.join(code(c) for c in codes)}\n"
+        f"🔗 {code(link_id)} · {expiry_note}\n\n"
+        f"📤 <b>Forward this to the buyer:</b>\n<code>{url}</code>"
     )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔗 Open Payment Page", url=url)],
+        [InlineKeyboardButton("🧾 Invoice", callback_data=f"invoice:{link_id}")],
+    ])
     if query:
-        await query.edit_message_text(text, parse_mode="HTML")
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
     else:
-        await update.message.reply_text(text, parse_mode="HTML")
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_seller(update):
         return
-    from providers import cashfree
-    from database import payments as paydb
     if not context.args:
         await update.message.reply_text(
-            f"📝 Usage: {code('/cancel PAY-XXXX')}",
-            parse_mode="HTML",
+            f"📝 Usage: {code('/cancel PAY-XXXX')}", parse_mode="HTML",
         )
         return
+    from database import payments as paydb
     link = paydb.get_link(context.args[0].strip().upper())
     if not link:
         await update.message.reply_text("🔍 Link not found.")
         return
-    if link["method"] == "upi":
-        try:
-            cashfree.cancel_link(link["link_id"])
-        except Exception as e:
-            await update.message.reply_text(f"❌ Cancel failed: {esc(str(e))}", parse_mode="HTML")
-            return
-    paydb.set_link_status(link["link_id"], "CANCELLED")
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Yes, cancel", callback_data=f"cancel:yes:{link['link_id']}"),
+        InlineKeyboardButton("❌ Keep it", callback_data="cancel:no"),
+    ]])
     await update.message.reply_text(
-        f"🗑️ Cancelled {code(link['link_id'])}",
-        parse_mode="HTML",
+        f"🗑️ Cancel {code(link['link_id'])} ({link['amount_expected']:.0f} {link['currency']})?\n"
+        f"Buyer won't be able to pay.",
+        parse_mode="HTML", reply_markup=kb,
     )
+
+
+async def cancel_confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, link_id: str):
+    from providers import cashfree
+    from database import payments as paydb
+    if link_id:
+        link = paydb.get_link(link_id)
+        if link and link["method"] == "upi" and link["status"] == "ACTIVE":
+            try:
+                cashfree.cancel_link(link_id)
+            except Exception as e:
+                await update.callback_query.edit_message_text(
+                    f"❌ Cancel failed: {esc(str(e))}", parse_mode="HTML",
+                )
+                return
+        if link:
+            paydb.set_link_status(link_id, "CANCELLED")
+        await update.callback_query.edit_message_text(f"🗑️ Cancelled {code(link_id)}", parse_mode="HTML")
+    else:
+        await update.callback_query.edit_message_text("Kept. Link still active ✅")

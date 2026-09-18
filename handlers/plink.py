@@ -1,7 +1,7 @@
-"""Custom payment links. No sale verification - amount + label only.
+"""Custom payment links. Amount + label first, then method, then review.
 
-Flow: /plink 100 [label...] -> method buttons -> review card
-[Create] [Edit amount] -> link. One-shot: /plink 100 upi label.
+Entries: /plink [amount] [label...] or menu button (asks amount via text).
+No sale verification - anything goes.
 """
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -13,7 +13,7 @@ from handlers.linkgen import create_and_store
 
 
 def _parse_args(args):
-    """Returns (amount, method_or_None, label)."""
+    """Returns (amount|None|'bad', method_or_None, label)."""
     if not args:
         return None, None, ""
     try:
@@ -36,59 +36,48 @@ def _amounts(amount, method, rate):
     return round(float(amount) * rate, 0) if rate else 0, float(amount)
 
 
-async def plink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_seller(update):
-        return
-    user_id = update.effective_user.id
-    amount, method, label = _parse_args(context.args or [])
-    if amount is None:
-        await update.message.reply_text(
-            f"📝 Usage: {code('/plink 100')} or {code('/plink 100 upi VPS setup fee')}",
-            parse_mode="HTML",
-        )
-        return
-    if amount == "bad":
-        await update.message.reply_text("⚠️ Invalid amount. Example: `/plink 500`", parse_mode="HTML")
-        return
-    if method:
-        # One-shot: everything known, create immediately.
-        await _create(update, context, user_id, method, amount, label or "Custom payment", edit=False)
-        return
-    state.set(user_id, "plink_amount", amount)
-    state.set(user_id, "plink_label", label)
-    state.set(user_id, "plink_stage", "method")
+def method_kb():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💳 UPI (INR)", callback_data="plink:method:upi"),
+            InlineKeyboardButton("🪙 Crypto (USD)", callback_data="plink:method:crypto"),
+        ],
+        [InlineKeyboardButton("❌ Cancel", callback_data="plink:cancel")],
+    ])
 
+
+def review_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Create Link", callback_data="plink:review:create")],
+        [
+            InlineKeyboardButton("✏️ Amount", callback_data="plink:review:editamt"),
+            InlineKeyboardButton("📝 Label", callback_data="plink:review:editlabel"),
+        ],
+        [
+            InlineKeyboardButton("⬅️ Method", callback_data="plink:back:method"),
+            InlineKeyboardButton("❌ Cancel", callback_data="plink:cancel"),
+        ],
+    ])
+
+
+async def _show_method(user_id, send):
+    """send(style, text, kb): style 'reply'|'edit'. Shared by command + back nav."""
     from providers.fx import get_inr_per_usd
+    amount = state.get(user_id, "plink_amount")
+    label = state.get(user_id, "plink_label", "")
     rate, _, _ = get_inr_per_usd()
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("💳 UPI (INR)", callback_data="plink:method:upi"),
-        InlineKeyboardButton("🪙 Crypto (USD)", callback_data="plink:method:crypto"),
-    ]])
-    await update.message.reply_text(
-        f"💰 <b>New Custom Link</b>\n\n"
+    text = (
+        f"🔗 <b>Custom Link</b>\n\n"
         f"💵 {fmt_money_inr(amount)} (~${round(amount / rate, 2) if rate else 0:,.2f})\n"
-        f"📝 {esc(label) if label else '<i>no label yet</i>'}\n\n"
-        f"👇 How should the buyer pay?",
-        parse_mode="HTML",
-        reply_markup=kb,
+        f"📝 {esc(label) if label else '<i>no label - tap 📝 Label later to add</i>'}\n\n"
+        f"👇 How should the buyer pay?"
     )
+    await send(text, method_kb())
 
 
-async def plink_method_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, method: str):
-    query = update.callback_query
-    user_id = update.effective_user.id
-    if state.get(user_id, "plink_amount") is None:
-        await query.edit_message_text("⚠️ Session expired. Run /plink again.")
-        return
-    state.set(user_id, "plink_method", method)
-    state.set(user_id, "plink_stage", "review")
-    await _show_review(update, context, user_id)
-
-
-async def _show_review(update, context, user_id):
+async def _show_review(user_id, send):
     from providers.fx import get_inr_per_usd
     from providers.cashfree import LINK_TTL_HOURS
-    query = update.callback_query
     amount = state.get(user_id, "plink_amount")
     label = state.get(user_id, "plink_label", "")
     method = state.get(user_id, "plink_method", "upi")
@@ -103,26 +92,105 @@ async def _show_review(update, context, user_id):
         f"📝 {esc(label) if label else '<i>no label</i>'}\n"
         f"💱 Rs {rate:.2f}/$ · {expiry}"
     )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Create Link", callback_data="plink:review:create")],
-        [InlineKeyboardButton("✏️ Edit Amount", callback_data="plink:review:edit")],
-    ])
-    if query:
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
-    else:
-        await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+    await send(text, review_kb())
+
+
+async def plink_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_seller(update):
+        return
+    user_id = update.effective_user.id
+    amount, method, label = _parse_args(context.args or [])
+    if amount is None:
+        # No args: ask for amount via text (button-friendly entry).
+        state.set(user_id, "plink_stage", "await_amount")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="plink:cancel")]])
+        await update.message.reply_text(
+            "🔗 <b>New Custom Link</b>\n\n💵 Send the amount in <b>INR</b>:",
+            parse_mode="HTML", reply_markup=kb,
+        )
+        return
+    if amount == "bad":
+        await update.message.reply_text("⚠️ Invalid amount. Example: `/plink 500`", parse_mode="HTML")
+        return
+    state.set(user_id, "plink_amount", amount)
+    state.set(user_id, "plink_label", label)
+    if method:
+        state.set(user_id, "plink_method", method)
+        state.set(user_id, "plink_stage", "review")
+        await _show_review(user_id, lambda t, k: update.message.reply_text(t, parse_mode="HTML", reply_markup=k))
+        return
+    state.set(user_id, "plink_stage", "method")
+    await _show_method(user_id, lambda t, k: update.message.reply_text(t, parse_mode="HTML", reply_markup=k))
+
+
+async def plink_got_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Text entry for /plink with no args. Returns True if consumed."""
+    user_id = update.effective_user.id
+    if state.get(user_id, "plink_stage") != "await_amount":
+        return False
+    text = update.message.text.strip()
+    # Allow "500 label here" in one line.
+    parts = text.split(None, 1)
+    try:
+        amount = float(parts[0].replace(",", "").replace("Rs", "").replace("$", ""))
+    except (ValueError, IndexError):
+        await update.message.reply_text("⚠️ Send just a number, e.g. <code>500</code>:", parse_mode="HTML")
+        return True
+    if amount <= 0:
+        await update.message.reply_text("⚠️ Amount must be positive:")
+        return True
+    state.set(user_id, "plink_amount", amount)
+    state.set(user_id, "plink_label", parts[1].strip() if len(parts) > 1 else "")
+    state.set(user_id, "plink_stage", "method")
+    await _show_method(user_id, lambda t, k: update.message.reply_text(t, parse_mode="HTML", reply_markup=k))
+    return True
+
+
+async def plink_method_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, method: str):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    if state.get(user_id, "plink_amount") is None:
+        await query.edit_message_text("⚠️ Session expired. Run /plink again.")
+        return
+    state.set(user_id, "plink_method", method)
+    state.set(user_id, "plink_stage", "review")
+    await _show_review(user_id, lambda t, k: query.edit_message_text(t, parse_mode="HTML", reply_markup=k))
+
+
+async def plink_back_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    if state.get(user_id, "plink_amount") is None:
+        await query.edit_message_text("⚠️ Session expired. Run /plink again.")
+        return
+    state.set(user_id, "plink_stage", "method")
+    await _show_method(user_id, lambda t, k: query.edit_message_text(t, parse_mode="HTML", reply_markup=k))
+
+
+async def plink_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    for k in ("plink_amount", "plink_label", "plink_method", "plink_stage"):
+        state.pop(user_id, k, None)
+    await update.callback_query.edit_message_text("❌ Cancelled. Run /plink to start over.")
 
 
 async def plink_review_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str):
     query = update.callback_query
     user_id = update.effective_user.id
-    if action == "edit":
+    if action == "editamt":
         state.set(user_id, "plink_stage", "edit_amount")
         method = state.get(user_id, "plink_method", "upi")
         unit = "INR" if method == "upi" else "USD"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="plink:back:review")]])
         await query.edit_message_text(
-            f"✏️ Send new amount in <b>{unit}</b> (or /cancel to abort):",
-            parse_mode="HTML",
+            f"✏️ Send new amount in <b>{unit}</b>:", parse_mode="HTML", reply_markup=kb,
+        )
+        return
+    if action == "editlabel":
+        state.set(user_id, "plink_stage", "edit_label")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="plink:back:review")]])
+        await query.edit_message_text(
+            "📝 Send new label (or <code>/skip</code> to clear):", parse_mode="HTML", reply_markup=kb,
         )
         return
     # create
@@ -136,23 +204,30 @@ async def plink_review_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, ac
 
 
 async def plink_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the edit-amount reply. Returns True if it consumed the message."""
+    """Handles edit_amount / edit_label replies. Returns True if consumed."""
     user_id = update.effective_user.id
-    if state.get(user_id, "plink_stage") != "edit_amount":
-        return False
-    text = update.message.text.strip()
-    try:
-        amount = float(text.replace(",", "").replace("Rs", "").replace("$", "").strip())
-    except ValueError:
-        await update.message.reply_text("⚠️ Enter a valid number:")
+    stage = state.get(user_id, "plink_stage")
+    if stage == "edit_amount":
+        text = update.message.text.strip()
+        try:
+            amount = float(text.replace(",", "").replace("Rs", "").replace("$", "").strip())
+        except ValueError:
+            await update.message.reply_text("⚠️ Enter a valid number:")
+            return True
+        if amount <= 0:
+            await update.message.reply_text("⚠️ Amount must be positive:")
+            return True
+        state.set(user_id, "plink_amount", amount)
+        state.set(user_id, "plink_stage", "review")
+        await _show_review(user_id, lambda t, k: update.message.reply_text(t, parse_mode="HTML", reply_markup=k))
         return True
-    if amount <= 0:
-        await update.message.reply_text("⚠️ Amount must be positive:")
+    if stage == "edit_label":
+        text = update.message.text.strip()
+        state.set(user_id, "plink_label", "" if text.lower() == "/skip" else text)
+        state.set(user_id, "plink_stage", "review")
+        await _show_review(user_id, lambda t, k: update.message.reply_text(t, parse_mode="HTML", reply_markup=k))
         return True
-    state.set(user_id, "plink_amount", amount)
-    state.set(user_id, "plink_stage", "review")
-    await _show_review(update, context, user_id)
-    return True
+    return False
 
 
 async def _create(update, context, user_id, method, amount, label, edit):
@@ -167,7 +242,7 @@ async def _create(update, context, user_id, method, amount, label, edit):
             user_id, amount_inr, amount_usd, rate,
         )
     except Exception as e:
-        text = f"❌ Provider error: {esc(str(e))}\n\nTry again or /cancel."
+        text = f"❌ Provider error: {esc(str(e))}\n\nTry again or ❌ Cancel."
         if edit and update.callback_query:
             await update.callback_query.edit_message_text(text, parse_mode="HTML")
         else:
@@ -184,7 +259,11 @@ async def _create(update, context, user_id, method, amount, label, edit):
         f"🔗 {code(link_id)} · {expiry}\n\n"
         f"📤 <b>Forward this to the buyer:</b>\n<code>{url}</code>"
     )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔗 Open Payment Page", url=url)],
+        [InlineKeyboardButton("🧾 Invoice", callback_data=f"invoice:{link_id}")],
+    ])
     if edit and update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode="HTML")
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
     else:
-        await update.message.reply_text(text, parse_mode="HTML")
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
