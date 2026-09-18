@@ -29,7 +29,6 @@ def create_upi_link(link_id, amount_inr, sale_codes, notify_url=""):
             "upi_intent": True,
             "notify_url": notify_url or config.CASHFREE_NOTIFY_URL,
         },
-        "link_notes": {"link_id": link_id, "sales": ",".join(sale_codes or [])},
         "customer_details": {"customer_phone": "9999999999"},
     }
     r = requests.post(
