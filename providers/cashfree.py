@@ -7,7 +7,7 @@ import config
 
 logger = logging.getLogger(__name__)
 
-LINK_TTL_HOURS = 24
+LINK_TTL_HOURS = 1
 
 
 def _headers():
