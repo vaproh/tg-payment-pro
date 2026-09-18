@@ -113,9 +113,9 @@ async def request_webhook(request: Request):
 
 
 def _find_by_request_id(request_id):
-    from database.connection import connect
+    from database.connection import connect_payments_db
     from database.connection import _d
-    conn = connect()
+    conn = connect_payments_db()
     try:
         row = conn.execute(
             "SELECT link_id FROM payment_links WHERE provider_ref LIKE ?", (f"%{request_id}%",)

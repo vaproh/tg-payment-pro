@@ -15,6 +15,11 @@ _default_db = os.path.join(
 )
 DB_PATH = os.path.abspath(os.getenv("DB_PATH", _default_db))
 
+_default_payments_db = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "data", "payments.db",
+)
+DB_PATH_PAYMENTS = os.path.abspath(os.getenv("DB_PATH_PAYMENTS", _default_payments_db))
+
 CASHFREE_ENV = os.getenv("CASHFREE_ENV", "sandbox").lower()
 CASHFREE_CLIENT_ID = os.getenv("CASHFREE_CLIENT_ID", "").strip()
 CASHFREE_CLIENT_SECRET = os.getenv("CASHFREE_CLIENT_SECRET", "").strip()

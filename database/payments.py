@@ -1,9 +1,9 @@
 import json
-from database.connection import connect, _d
+from database.connection import connect_payments_db, _d
 
 
 def create_link(row):
-    conn = connect()
+    conn = connect_payments_db()
     try:
         conn.execute(
             """INSERT INTO payment_links
@@ -24,7 +24,7 @@ def create_link(row):
 
 
 def get_link(link_id):
-    conn = connect()
+    conn = connect_payments_db()
     try:
         row = conn.execute(
             """SELECT pl.*, p.tx_id, p.amount_paid as settled_amount
@@ -44,7 +44,7 @@ def get_link(link_id):
 
 
 def set_link_status(link_id, status, paid_at=None):
-    conn = connect()
+    conn = connect_payments_db()
     try:
         if paid_at:
             conn.execute(
@@ -61,7 +61,7 @@ def set_link_status(link_id, status, paid_at=None):
 
 
 def record_payment(link_id, tx_id, amount_paid):
-    conn = connect()
+    conn = connect_payments_db()
     try:
         conn.execute(
             """INSERT OR IGNORE INTO payments (link_id, tx_id, amount_paid)
@@ -78,7 +78,7 @@ def record_payment(link_id, tx_id, amount_paid):
 
 
 def has_payment(link_id):
-    conn = connect()
+    conn = connect_payments_db()
     try:
         row = conn.execute(
             "SELECT id FROM payments WHERE link_id = ?", (link_id,)
@@ -89,7 +89,7 @@ def has_payment(link_id):
 
 
 def list_links(kind=None, creator_user_id=None, limit=20, offset=0):
-    conn = connect()
+    conn = connect_payments_db()
     try:
         q = """SELECT pl.*, p.tx_id, p.amount_paid, p.paid_at as settled_at
                FROM payment_links pl LEFT JOIN payments p ON p.link_id = pl.link_id
