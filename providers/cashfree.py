@@ -19,6 +19,19 @@ def _headers():
     }
 
 
+def _raise_for_status(r):
+    """Like raise_for_status but surfaces Cashfree's code/message in the error."""
+    try:
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        try:
+            body = r.json()
+            detail = body.get("message") or body.get("code") or r.text
+        except Exception:
+            detail = r.text[:300]
+        raise RuntimeError(f"Cashfree {r.status_code}: {detail}") from e
+
+
 def _expiry_iso():
     return (datetime.now(timezone.utc) + timedelta(hours=LINK_TTL_HOURS)).strftime(
         "%Y-%m-%dT%H:%M:%S+00:00"
@@ -45,7 +58,7 @@ def create_upi_link(link_id, amount_inr, sale_codes, notify_url="", customer_pho
     r = requests.post(
         f"{config.CASHFREE_BASE}/pg/links", json=payload, headers=_headers(), timeout=20
     )
-    r.raise_for_status()
+    _raise_for_status(r)
     data = r.json()
     return {"url": data["link_url"], "provider_ref": str(data.get("cf_link_id", ""))}
 
@@ -54,7 +67,7 @@ def fetch_link(link_id):
     r = requests.get(
         f"{config.CASHFREE_BASE}/pg/links/{link_id}", headers=_headers(), timeout=15
     )
-    r.raise_for_status()
+    _raise_for_status(r)
     return r.json()
 
 
@@ -63,5 +76,5 @@ def cancel_link(link_id):
         f"{config.CASHFREE_BASE}/pg/links/{link_id}/cancel",
         headers=_headers(), timeout=15,
     )
-    r.raise_for_status()
+    _raise_for_status(r)
     return r.json()
