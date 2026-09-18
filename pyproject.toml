@@ -1,0 +1,27 @@
+[project]
+name = "tg-payment-pro"
+version = "1.0.0"
+description = "Payment link extension bot for tg-seller-pro (Cashfree UPI + Request Network crypto)"
+requires-python = ">=3.12"
+dependencies = [
+    "python-telegram-bot>=21.0",
+    "python-dotenv>=1.0.1",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["core", "handlers", "database", "providers", "webhooks", "webview"]
