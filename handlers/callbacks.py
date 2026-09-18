@@ -3,7 +3,7 @@ from telegram.ext import ContextTypes
 
 from core.permissions import require_seller
 from handlers.pay import pay_method_cb, pay_amount_cb
-from handlers.plink import plink_method_cb, plink_amount_cb, handle_text as plink_handle_text
+from handlers.plink import plink_method_cb, plink_review_cb
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -18,5 +18,5 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pay_amount_cb(update, context, data.split(":")[-1])
     elif data.startswith("plink:method:"):
         await plink_method_cb(update, context, data.split(":")[-1])
-    elif data.startswith("plink:amt:"):
-        await plink_amount_cb(update, context, data.split(":")[-1])
+    elif data.startswith("plink:review:"):
+        await plink_review_cb(update, context, data.split(":")[-1])

@@ -31,18 +31,18 @@ logger = logging.getLogger("tg-payment-pro")
 async def post_init(application):
     application.bot_data["start_time"] = time.time()
     commands = [
-        BotCommand("start", "Start"),
-        BotCommand("pay", "Sale links: /pay SALE-A, SALE-B"),
-        BotCommand("plink", "Custom: /plink 1200 upi Label"),
-        BotCommand("salesbook", "Sale links ledger"),
-        BotCommand("plinkbook", "Custom links ledger"),
-        BotCommand("books", "Mobile webview links"),
-        BotCommand("invoice", "Resend invoice"),
-        BotCommand("cancel", "Cancel a link"),
-        BotCommand("convert", "INR <> USD"),
-        BotCommand("rate", "Current rate"),
-        BotCommand("ping", "Health check"),
-        BotCommand("help", "Help"),
+        BotCommand("start", "🚀 Start the payment bot"),
+        BotCommand("pay", "💰 Sale link: /pay SALE-A, SALE-B"),
+        BotCommand("plink", "🔗 Custom link: /plink 100 label"),
+        BotCommand("salesbook", "📒 Sale links ledger"),
+        BotCommand("plinkbook", "📕 Custom links ledger"),
+        BotCommand("books", "📱 Mobile webview links"),
+        BotCommand("invoice", "🧾 Resend invoice: /invoice PAY-XXXX"),
+        BotCommand("cancel", "🗑️ Cancel a link"),
+        BotCommand("convert", "💱 Convert INR <> USD"),
+        BotCommand("rate", "📈 Current Rs/$ rate"),
+        BotCommand("ping", "🏓 Health check"),
+        BotCommand("help", "📖 Help"),
     ]
     await application.bot.set_my_commands(commands)
 

@@ -22,7 +22,22 @@ def _verify_hmac(raw: bytes, signature: str, secret: str):
     return hmac.compare_digest(good, signature)
 
 
+async def _notify_link(link, text):
+    """Send to creator + admin (if different). Chat first, logs never alone."""
+    bot = Bot(token=config.BOT_TOKEN)
+    try:
+        await bot.send_message(chat_id=link["creator_user_id"], text=text, parse_mode="HTML")
+    except Exception as e:
+        logger.warning("notify creator failed: %s", e)
+    try:
+        if link["creator_user_id"] != config.ADMIN_USER_ID:
+            await bot.send_message(chat_id=config.ADMIN_USER_ID, text=text, parse_mode="HTML")
+    except Exception as e:
+        logger.warning("notify admin failed: %s", e)
+
+
 async def _settle(link_id, tx_id, amount_paid, source_url=""):
+    from core.format import code as _code
     link = paydb.get_link(link_id)
     if not link:
         return False, "unknown link"
@@ -38,7 +53,7 @@ async def _settle(link_id, tx_id, amount_paid, source_url=""):
         text = fmt_sale_invoice(link, sales, tx_id, source_url or link["url"], settled)
     else:
         text = fmt_plink_invoice(link, tx_id, settled)
-    admin_text = text + f"\nSeller: {code(link['creator_user_id'])}"
+    admin_text = text + f"\nSeller: {_code(link['creator_user_id'])}"
     bot = Bot(token=config.BOT_TOKEN)
     try:
         await bot.send_message(chat_id=link["creator_user_id"], text=text, parse_mode="HTML")
@@ -79,8 +94,31 @@ async def cashfree_webhook(request: Request):
         tx = str(order.get("transaction_id", "") or data.get("cf_link_id", ""))
         ok, msg = await _settle(link_id, tx, paid or data.get("link_amount"))
         return {"ok": ok, "msg": msg}
+    if status == "PARTIALLY_PAID" or event == "PARTIALLY_PAID":
+        link = paydb.get_link(link_id)
+        if link:
+            await _notify_link(link,
+                f"🟡 <b>Partial payment</b> on {code(link_id)}\n"
+                f"💵 Received so far: <b>Rs {paid:,.0f}</b> of Rs {float(link['amount_expected']):,.0f}\n"
+                f"Link stays open - buyer can pay the rest.")
+        return {"ok": True, "msg": "partial"}
+    order = data.get("order", {}) or {}
+    if str(order.get("transaction_status", "")).upper() == "FAILED":
+        link = paydb.get_link(link_id)
+        if link:
+            await _notify_link(link,
+                f"❌ <b>Payment failed</b> on {code(link_id)}\n"
+                f"Buyer attempt did not go through. Link is still active - ask them to retry.")
+        return {"ok": True, "msg": "failed"}
     if status in ("EXPIRED", "CANCELLED"):
         paydb.set_link_status(link_id, status)
+        link = paydb.get_link(link_id)
+        if link:
+            verb = "expired ⏰" if status == "EXPIRED" else "cancelled 🗑️"
+            hint = "/pay" if link.get("kind") == "sale" else "/plink"
+            await _notify_link(link,
+                f"⚠️ Link {code(link_id)} {verb}.\n"
+                f"No money received. Run {code(hint)} again to make a fresh link.")
         return {"ok": True, "msg": status.lower()}
     return {"ok": True, "msg": "ignored"}
 
@@ -96,7 +134,30 @@ async def request_webhook(request: Request):
         sig = request.headers.get("x-request-network-signature", "")
         if not _verify_hmac(raw, sig, config.RN_WEBHOOK_SECRET):
             return JSONResponse({"ok": False}, status_code=401)
-    if str(body.get("event", "")) != "payment.confirmed":
+    event = str(body.get("event", ""))
+    if event == "payment.failed":
+        req_id = str(body.get("requestId", "") or body.get("requestID", ""))
+        link = _find_by_request_id(req_id) if req_id else None
+        if not link and body.get("reference"):
+            link = paydb.get_link(str(body["reference"]))
+        if link:
+            await _notify_link(link,
+                f"❌ <b>Crypto payment failed</b> on {code(link['link_id'])}\n"
+                f"TX: {code(str(body.get('txHash', '-')))}\n"
+                f"Link stays open - buyer can retry.")
+        return {"ok": True, "msg": "failed"}
+    if event == "payment.partial":
+        req_id = str(body.get("requestId", "") or body.get("requestID", ""))
+        link = _find_by_request_id(req_id) if req_id else None
+        if not link and body.get("reference"):
+            link = paydb.get_link(str(body["reference"]))
+        if link:
+            await _notify_link(link,
+                f"🟡 <b>Partial crypto payment</b> on {code(link['link_id'])}\n"
+                f"💵 Received: <b>{body.get('totalAmountPaid', '?')} {body.get('paymentCurrency', '')}</b>\n"
+                f"Waiting for the rest - do not deliver yet.")
+        return {"ok": True, "msg": "partial"}
+    if event != "payment.confirmed":
         return {"ok": True, "msg": "ignored"}
     # Reconcile by reference (we set reference=link_id) or requestId via provider_ref
     ref = str(body.get("reference", "") or "")

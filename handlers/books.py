@@ -41,13 +41,15 @@ async def salesbook_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     rows = paydb.list_links(kind="sale", creator_user_id=_scope(update.effective_user.id), limit=20)
     if not rows:
-        await update.message.reply_text("No sale links yet.")
+        await update.message.reply_text("📭 No sale links yet. Run /pay to make one.")
         return
-    lines = ["<b>Sale book (latest 20)</b>"]
+    lines = ["📒 <b>Sale book (latest 20)</b>"]
+    status_emoji = {"PAID": "✅", "ACTIVE": "🟡", "EXPIRED": "⏰", "CANCELLED": "🗑️"}
     for r in rows:
         codes = ",".join(r.get("sale_codes") or [])
+        emoji = status_emoji.get(r["status"], "⚪")
         lines.append(
-            f"{code(r['link_id'])} | {r['method']} | {r['amount_expected']:.0f} {r['currency']} "
+            f"{emoji} {code(r['link_id'])} | {r['method'].upper()} | {r['amount_expected']:.0f} {r['currency']} "
             f"| {r['status']} | {esc(codes)}"
         )
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
@@ -58,12 +60,14 @@ async def plinkbook_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     rows = paydb.list_links(kind="plink", creator_user_id=_scope(update.effective_user.id), limit=20)
     if not rows:
-        await update.message.reply_text("No custom links yet.")
+        await update.message.reply_text("📭 No custom links yet. Run /plink to make one.")
         return
-    lines = ["<b>Plink book (latest 20)</b>"]
+    lines = ["📕 <b>Plink book (latest 20)</b>"]
+    status_emoji = {"PAID": "✅", "ACTIVE": "🟡", "EXPIRED": "⏰", "CANCELLED": "🗑️"}
     for r in rows:
+        emoji = status_emoji.get(r["status"], "⚪")
         lines.append(
-            f"{code(r['link_id'])} | {r['method']} | {r['amount_expected']:.0f} {r['currency']} "
+            f"{emoji} {code(r['link_id'])} | {r['method'].upper()} | {r['amount_expected']:.0f} {r['currency']} "
             f"| {r['status']} | {esc(r.get('purpose') or '-')}"
         )
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
@@ -73,14 +77,14 @@ async def invoice_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_seller(update):
         return
     if not context.args:
-        await update.message.reply_text(f"Usage: {code('/invoice PAY-XXXX')}", parse_mode="HTML")
+        await update.message.reply_text(f"📝 Usage: {code('/invoice PAY-XXXX')}", parse_mode="HTML")
         return
     link = paydb.get_link(context.args[0].strip().upper())
     if not link:
-        await update.message.reply_text("Link not found.")
+        await update.message.reply_text("🔍 Link not found.")
         return
     if get_user_role(update.effective_user.id) != "admin" and link["creator_user_id"] != update.effective_user.id:
-        await update.message.reply_text("Not yours.")
+        await update.message.reply_text("🔒 Not yours.")
         return
     from core.format import fmt_sale_invoice, fmt_plink_invoice
     from database.connection import get_sale_by_code
@@ -99,11 +103,11 @@ async def books_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_seller(update):
         return
     if not config.WEBAPP_BASE_URL:
-        await update.message.reply_text("Webview not configured (WEBAPP_BASE_URL). Use /salesbook and /plinkbook.")
+        await update.message.reply_text("⚠️ Webview not configured (WEBAPP_BASE_URL). Use /salesbook and /plinkbook.")
         return
     token = sign_token(update.effective_user.id)
     await update.message.reply_text(
-        f"Sales book:\n{code(f'{config.WEBAPP_BASE_URL}/sales?token={token}')}\n\n"
-        f"Plink book:\n{code(f'{config.WEBAPP_BASE_URL}/plink?token={token}')}",
+        f"📒 Sales book:\n{code(f'{config.WEBAPP_BASE_URL}/sales?token={token}')}\n\n"
+        f"📕 Plink book:\n{code(f'{config.WEBAPP_BASE_URL}/plink?token={token}')}",
         parse_mode="HTML",
     )
