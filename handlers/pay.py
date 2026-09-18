@@ -146,10 +146,16 @@ async def _finalize_pay(update: Update, context, custom):
         return
     for k in ("pay_codes", "pay_total_inr", "pay_total_usd", "pay_rate", "pay_method", "pay_stage"):
         state.pop(user_id, k, None)
+    if method == "upi":
+        from providers.cashfree import LINK_TTL_HOURS
+        expiry_note = f"Expires in {LINK_TTL_HOURS}h"
+    else:
+        expiry_note = "No expiry"
     text = (
         f"Send this link to buyer:\n{code(url)}\n\n"
         f"Link: {code(link_id)}\nSales: {', '.join(code(c) for c in codes)}\n"
-        f"Amount: <b>{amount} {currency}</b> ({fmt_money_inr(amount_inr)} / {fmt_money_usd(amount_usd)})"
+        f"Amount: <b>{amount} {currency}</b> ({fmt_money_inr(amount_inr)} / {fmt_money_usd(amount_usd)})\n"
+        f"{expiry_note}"
     )
     if query:
         await query.edit_message_text(text, parse_mode="HTML")

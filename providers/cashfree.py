@@ -1,10 +1,13 @@
 """Cashfree Payment Links (UPI-only). Docs: POST /pg/links."""
 import logging
 import requests
+from datetime import datetime, timedelta, timezone
 
 import config
 
 logger = logging.getLogger(__name__)
+
+LINK_TTL_HOURS = 24
 
 
 def _headers():
@@ -16,6 +19,12 @@ def _headers():
     }
 
 
+def _expiry_iso():
+    return (datetime.now(timezone.utc) + timedelta(hours=LINK_TTL_HOURS)).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00"
+    )
+
+
 def create_upi_link(link_id, amount_inr, sale_codes, notify_url=""):
     payload = {
         "link_id": link_id,
@@ -23,6 +32,8 @@ def create_upi_link(link_id, amount_inr, sale_codes, notify_url=""):
         "link_currency": "INR",
         "link_purpose": f"Sale {', '.join(sale_codes)}" if sale_codes else "Custom payment",
         "link_partial_payments": False,
+        "link_expiry_time": _expiry_iso(),
+        "link_auto_reminders": True,
         "link_notify": {"send_email": False, "send_sms": False},
         "link_meta": {
             "payment_methods": "upi",

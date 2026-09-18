@@ -63,6 +63,7 @@ async def plink_method_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, me
 
 async def _make_plink(update, user_id, method, amount, label, edit=False):
     from providers.fx import get_inr_per_usd
+    from providers.cashfree import LINK_TTL_HOURS
     rate, _, _ = get_inr_per_usd()
     currency = "INR" if method == "upi" else "USD"
     if method == "upi":
@@ -81,10 +82,12 @@ async def _make_plink(update, user_id, method, amount, label, edit=False):
         else:
             await update.message.reply_text(text)
         return
+    expiry_note = f"Expires in {LINK_TTL_HOURS}h" if method == "upi" else "No expiry"
     text = (
         f"Send this link to buyer:\n<code>{url}</code>\n\n"
         f"Link: <code>{link_id}</code>\nPurpose: {label}\n"
-        f"Amount: <b>{amount} {currency}</b> ({fmt_money_inr(amount_inr)} / {fmt_money_usd(amount_usd)})"
+        f"Amount: <b>{amount} {currency}</b> ({fmt_money_inr(amount_inr)} / {fmt_money_usd(amount_usd)})\n"
+        f"{expiry_note}"
     )
     if edit:
         await update.callback_query.edit_message_text(text, parse_mode="HTML")
